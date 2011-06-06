@@ -47,7 +47,8 @@
          handoff_cancelled/1,
          handoff_finished/2,
          handle_handoff_data/2,
-         encode_handoff_item/2]).
+         encode_handoff_item/2,
+         handle_exit/3]).
 
 -export([do_fold/5]).
 
@@ -334,6 +335,20 @@ delete(State=#state{mod=Mod, modstate=ModState}) ->
 terminate(_Reason, #state{mod=Mod, modstate=ModState}) ->
     Mod:stop(ModState),
     ok.
+
+handle_exit(_Pid, normal, State) ->
+    %% Assuming the fold process died, no reason to crash here
+    {noreply, State};
+handle_exit(_Pid, _Reason, State) ->    
+    %% A linked processes has died so the vnode
+    %% process should take appropriate action here.
+    %% The default behavior is to crash the vnode 
+    %% process so that it can be respawned
+    %% by riak_core_vnode_master to prevent 
+    %% messages from stacking up on the process message
+    %% queue and never being processed.
+    {stop, linked_process_crash, State}.
+
 
 %% old vnode helper functions
 
