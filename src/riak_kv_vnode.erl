@@ -190,10 +190,10 @@ handle_command(?KV_GET_REQ{}=Req, Sender,
     Predecessor = 
         case lists:keyfind(Index, 1, IdxPids2) of
             {_, Pid} ->
-                error_logger:error_msg("new vnode found predecessor: ~p~n", [Pid]),
+                error_logger:error_msg("~p: new vnode found predecessor: ~p~n", [Index, Pid]),
                 Pid;
             false ->
-                error_logger:error_msg("new vnode didn't find  predecessor: ~n", []),
+                %%error_logger:error_msg("new vnode didn't find  predecessor: ~n", []),
                 undefined
         end,
     handle_command(Req, Sender, State#state{checked_for_predecessor=true,
@@ -215,14 +215,18 @@ handle_command(?KV_GET_REQ{bkey=BKey,req_id=ReqId},_Sender,
             R ->
                 case try_remote(Predecessor, BKey, Idx) of
                     noproc ->
-                        error_logger:error_msg("predecessor is dead~n"),
+                        error_logger:error_msg("~p (~p): predecessor is dead~n", [Predecessor, Idx]),
                         {R, State#state{predecessor=undefined}};
+                    {error, notfound} ->
+                        error_logger:error_msg("~p (~p): key NOT found on predecessor ~p, R=~p~n", [Predecessor, Idx, BKey, R]),
+                        {R, State};
                     {ok, Obj} ->
                         %% Write data locally to avoid remote gets, at
                         %% this point we know the data doesn't exist
                         %% locally so just write it "as is" (i.e. no
                         %% need to do any reconciliation)
                         ok = Mod:put(ModState, BKey, term_to_binary(Obj)),
+                        error_logger:error_msg("~p (~p): key found on predecessor ~p~n", [Predecessor, Idx, BKey]),
                         {{ok,Obj}, State}
                 end
         end,
@@ -630,17 +634,16 @@ do_diffobj_put(BKey={Bucket,_}, DiffObj,
 try_remote(Predecessor, BKey, Index) ->
     Ref = make_ref(),
     Msg = ?KV_GET_REQ{bkey=BKey,req_id=Ref},
-    Sender = {fsm, undefined, self()},
+    Sender = {raw, Ref, self()},
     gen_fsm:send_event(Predecessor,
                        riak_core_vnode_master:make_request(Msg,
                                                            Sender,
                                                            Index)),
 
     receive
-        {'$gen_event', {r, Val, _Idx, Ref}} ->
+        {Ref, {r, Val, Index, Ref}} ->
             Val
     after 5000 ->
-            error_logger:error_msg("try_remote timeout~n"),
             noproc
     end.
 
