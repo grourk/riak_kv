@@ -70,8 +70,8 @@
                 modstate :: term(),
                 mrjobs :: term(),
                 in_handoff = false :: boolean(),
-                checked_for_predecessor = false :: boolean(),
-                predecessor :: pid() | undefined}).
+                predecessor = undefined :: pid() | none | undefined,
+                predecessor_notfounds = undefined :: set() | undefined}).
 
 -record(putargs, {returnbody :: boolean(),
                   lww :: boolean(),
@@ -176,54 +176,55 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
 
 handle_command(?KV_GET_REQ{}=Req, Sender,
                State=#state{idx=Index,
-                            checked_for_predecessor=false}) ->
+                            predecessor=undefined}) ->
     %% Figure out if this new vnode has a predecessor because of node
     %% join/leave.
     Nodes = nodes(),
     IdxPids2 =
         lists:flatten([rpc:call(Node, riak_core_vnode_master,
                                 all_nodes, [?MODULE]) || Node <- Nodes]),
-    Predecessor = 
+    {Predecessor, NotFounds} = 
         case lists:keyfind(Index, 1, IdxPids2) of
             {_, Pid} ->
-                error_logger:error_msg("~p: new vnode found predecessor: ~p~n", [Index, Pid]),
-                Pid;
+                {Pid, sets:new()};
             false ->
-                %%error_logger:error_msg("new vnode didn't find  predecessor: ~n", []),
-                undefined
+                {none, undefined}
         end,
-    handle_command(Req, Sender, State#state{checked_for_predecessor=true,
-                                            predecessor=Predecessor});
+    handle_command(Req, Sender, State#state{predecessor=Predecessor, predecessor_notfounds=NotFounds});
 
 handle_command(?KV_GET_REQ{bkey=BKey,req_id=ReqId},
-               Sender,State=#state{predecessor=undefined}) ->
+               Sender,State=#state{predecessor=none}) ->
     do_get(Sender, BKey, ReqId, State);
 
 handle_command(?KV_GET_REQ{bkey=BKey,req_id=ReqId},_Sender,
                State=#state{mod=Mod,
                             modstate=ModState,
                             idx=Idx,
-                            predecessor=Predecessor}) ->
+                            predecessor=Predecessor,
+                            predecessor_notfounds=NotFounds}) ->
     {Retval, NewState} =
         case do_get_term(BKey, Mod, ModState) of
             {ok, _} = R ->
                 {R, State};
             R ->
-                case try_remote(Predecessor, BKey, Idx) of
-                    noproc ->
-                        error_logger:error_msg("~p (~p): predecessor is dead~n", [Predecessor, Idx]),
-                        {R, State#state{predecessor=undefined}};
-                    {error, notfound} ->
-                        error_logger:error_msg("~p (~p): key NOT found on predecessor ~p, R=~p~n", [Predecessor, Idx, BKey, R]),
+                case sets:is_element(BKey, NotFounds) of
+                    true ->
                         {R, State};
-                    {ok, Obj} ->
-                        %% Write data locally to avoid remote gets, at
-                        %% this point we know the data doesn't exist
-                        %% locally so just write it "as is" (i.e. no
-                        %% need to do any reconciliation)
-                        ok = Mod:put(ModState, BKey, term_to_binary(Obj)),
-                        error_logger:error_msg("~p (~p): key found on predecessor ~p~n", [Predecessor, Idx, BKey]),
-                        {{ok,Obj}, State}
+                    false ->
+                        case try_remote(Predecessor, BKey, Idx) of
+                            noproc ->
+                                {R, State#state{predecessor=none, predecessor_notfounds=undefined}};
+                            {error, notfound} ->
+                                NotFounds1 = sets:add_element(BKey, NotFounds),
+                                {R, State#state{predecessor_notfounds=NotFounds1}};
+                            {ok, Obj} ->
+                                %% Write data locally to avoid remote gets, at
+                                %% this point we know the data doesn't exist
+                                %% locally so just write it "as is" (i.e. no
+                                %% need to do any reconciliation)
+                                ok = Mod:put(ModState, BKey, term_to_binary(Obj)),
+                                {{ok,Obj}, State}
+                        end
                 end
         end,
 
