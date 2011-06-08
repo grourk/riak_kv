@@ -47,6 +47,7 @@
          handoff_cancelled/1,
          handoff_finished/2,
          handle_handoff_data/2,
+         handle_handoff_received/1,
          encode_handoff_item/2,
          handle_exit/3]).
 
@@ -321,6 +322,9 @@ handle_handoff_data(BinObj, State) ->
         Err ->
             {reply, {error, Err}, State}
     end.
+
+handle_handoff_received(State) ->
+    {reply, ok, State#state{predecessor=none, predecessor_notfounds=undefined}}.
 
 encode_handoff_item({B,K}, V) ->
     zlib:zip(riak_core_pb:encode_riakobject_pb(
