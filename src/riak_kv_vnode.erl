@@ -243,11 +243,19 @@ handle_command(?KV_LISTKEYS_REQ{bucket=Bucket, req_id=ReqId, caller=Caller}, _Se
 
 handle_command(?KV_DELETE_REQ{bkey=BKey, req_id=ReqId}, _Sender,
                State=#state{mod=Mod, modstate=ModState,
-                            idx=Idx}) ->
+                            idx=Idx,
+                            predecessor_notfounds=NotFounds}) ->
     riak_kv_mapred_cache:eject(BKey),
     case Mod:delete(ModState, BKey) of
         ok ->
-            {reply, {del, Idx, ReqId}, State};
+            NewState = case NotFounds of
+                undefined ->
+                    State;
+                _ ->
+                    NotFounds1 = sets:add_element(BKey, NotFounds),
+                    State#state{predecessor_notfounds=NotFounds1}
+            end,
+            {reply, {del, Idx, ReqId}, NewState};
         {error, _Reason} ->
             {reply, {fail, Idx, ReqId}, State}
     end;
